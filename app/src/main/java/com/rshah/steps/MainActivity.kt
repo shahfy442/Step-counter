@@ -26,10 +26,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,43 +154,116 @@ fun HomeScreen(onSettings: () -> Unit) {
     }
 }
 
+private val HEIGHT_RANGE = 100..250
+private val GOAL_RANGE = 1000..50000
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
-    BackHandler(onBack = onBack)
-    val height by StepRepo.heightCm.collectAsState()
-    val goal by StepRepo.goal.collectAsState()
-    val sens by StepRepo.sensitivity.collectAsState()
+    val savedHeight by StepRepo.heightCm.collectAsState()
+    val savedGoal by StepRepo.goal.collectAsState()
+    val savedSens by StepRepo.sensitivity.collectAsState()
+    val savedLevel = (savedSens * 9f + 1f).roundToInt()
 
-    Scaffold(topBar = {
-        TopAppBar(
-            title = { Text("Settings") },
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+    // Drafts: nothing is saved until "Apply settings" is pressed.
+    var hText by rememberSaveable { mutableStateOf(savedHeight.toString()) }
+    var gText by rememberSaveable { mutableStateOf(savedGoal.toString()) }
+    var level by rememberSaveable { mutableFloatStateOf(savedLevel.toFloat()) }
+
+    val h = hText.toIntOrNull()?.takeIf { it in HEIGHT_RANGE }
+    val g = gText.toIntOrNull()?.takeIf { it in GOAL_RANGE }
+    val lvl = level.roundToInt()
+    val valid = h != null && g != null
+    val dirty = hText != savedHeight.toString() || gText != savedGoal.toString() || lvl != savedLevel
+
+    var confirmDiscard by remember { mutableStateOf(false) }
+    val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val focus = LocalFocusManager.current
+
+    fun tryBack() { if (dirty) confirmDiscard = true else onBack() }
+    BackHandler { tryBack() }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snack) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Settings") },
+                navigationIcon = {
+                    IconButton(onClick = { tryBack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
                 }
-            }
-        )
-    }) { pad ->
+            )
+        }
+    ) { pad ->
         Column(
             Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            NumField("Height (cm)", height, 100..250) { StepRepo.setHeight(it) }
+            SettingField("Height (cm)", hText, HEIGHT_RANGE) { hText = it }
             Text(
-                "Stride length: %.0f cm. Used for distance.".format(StepRepo.strideMeters() * 100),
+                "Stride length: %.0f cm. Used for distance.".format((h ?: savedHeight) * 0.415f),
                 style = MaterialTheme.typography.bodySmall
             )
-            NumField("Daily goal (steps)", goal, 1000..50000) { StepRepo.setGoal(it) }
+            SettingField("Daily goal (steps)", gText, GOAL_RANGE) { gText = it }
 
-            Text("Sensitivity", style = MaterialTheme.typography.titleMedium)
-            Slider(value = sens, onValueChange = { StepRepo.setSensitivity(it) })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Sensitivity",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("$lvl / 10", style = MaterialTheme.typography.headlineSmall)
+            }
+            Slider(
+                value = level,
+                onValueChange = { v ->
+                    if (v.roundToInt() != level.roundToInt()) {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                    level = v
+                },
+                valueRange = 1f..10f,
+                steps = 8
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Less sensitive", style = MaterialTheme.typography.bodySmall)
+                Text("More sensitive", style = MaterialTheme.typography.bodySmall)
+            }
             Text(
                 "Calibrate: walk 100 steps and compare. Undercounting? Raise it. " +
                     "Counting while still? Lower it.",
                 style = MaterialTheme.typography.bodySmall
             )
+
+            Button(
+                onClick = {
+                    StepRepo.setHeight(h!!)
+                    StepRepo.setGoal(g!!)
+                    StepRepo.setSensitivity((lvl - 1) / 9f)
+                    focus.clearFocus()
+                    scope.launch { snack.showSnackbar("Settings saved") }
+                },
+                enabled = dirty && valid,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Apply settings") }
         }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Discard changes?") },
+            text = { Text("Your changes haven't been applied yet.") },
+            confirmButton = {
+                TextButton(onClick = { confirmDiscard = false; onBack() }) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") }
+            }
+        )
     }
 }
 
@@ -201,16 +279,14 @@ fun StatCard(label: String, value: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun NumField(label: String, value: Int, range: IntRange, onValid: (Int) -> Unit) {
-    var t by remember { mutableStateOf(value.toString()) }
+fun SettingField(label: String, text: String, range: IntRange, onText: (String) -> Unit) {
     OutlinedTextField(
-        value = t,
-        onValueChange = { s ->
-            t = s.filter { it.isDigit() }.take(5)
-            t.toIntOrNull()?.takeIf { it in range }?.let(onValid)
-        },
+        value = text,
+        onValueChange = { onText(it.filter { c -> c.isDigit() }.take(5)) },
         label = { Text(label) },
         singleLine = true,
+        isError = text.toIntOrNull()?.let { it !in range } ?: true,
+        supportingText = { Text("${range.first} to ${range.last}") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier.fillMaxWidth()
     )
