@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -16,8 +17,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
@@ -31,7 +36,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         StepRepo.init(this)
         enableEdgeToEdge()
-        setContent { StepTheme { StepScreen() } }
+        setContent { StepTheme { StepApp() } }
     }
 }
 
@@ -51,15 +56,21 @@ fun StepTheme(content: @Composable () -> Unit) {
 private fun Context.granted(p: String) =
     ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
+@Composable
+fun StepApp() {
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    if (showSettings) SettingsScreen { showSettings = false }
+    else HomeScreen { showSettings = true }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StepScreen() {
+fun HomeScreen(onSettings: () -> Unit) {
     val ctx = LocalContext.current
     val steps by StepRepo.steps.collectAsState()
-    val height by StepRepo.heightCm.collectAsState()
     val goal by StepRepo.goal.collectAsState()
-    val sens by StepRepo.sensitivity.collectAsState()
     val running by StepRepo.running.collectAsState()
+    var confirmStop by remember { mutableStateOf(false) }
 
     fun start() = ContextCompat.startForegroundService(ctx, Intent(ctx, StepService::class.java))
     val launcher = rememberLauncherForActivityResult(
@@ -81,17 +92,26 @@ fun StepScreen() {
     val km = steps * StepRepo.strideMeters() / 1000f
     val kcal = steps * 0.04f
 
-    Scaffold(topBar = { CenterAlignedTopAppBar(title = { Text("Steps") }) }) { pad ->
+    Scaffold(topBar = {
+        CenterAlignedTopAppBar(
+            title = { Text("Steps") },
+            actions = {
+                IconButton(onClick = onSettings) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings")
+                }
+            }
+        )
+    }) { pad ->
         Column(
             Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(
                     progress = { (steps / goal.toFloat()).coerceIn(0f, 1f) },
-                    modifier = Modifier.size(240.dp),
-                    strokeWidth = 16.dp,
+                    modifier = Modifier.size(260.dp),
+                    strokeWidth = 18.dp,
                     trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     strokeCap = StrokeCap.Round
                 )
@@ -106,31 +126,65 @@ fun StepScreen() {
                 StatCard("Calories", "%.0f kcal".format(kcal), Modifier.weight(1f))
             }
 
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Settings", style = MaterialTheme.typography.titleMedium)
-                    NumField("Height (cm)", height, 100..250) { StepRepo.setHeight(it) }
-                    Text(
-                        "Stride length: %.0f cm".format(StepRepo.strideMeters() * 100),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    NumField("Daily goal (steps)", goal, 1000..50000) { StepRepo.setGoal(it) }
-                    Text("Sensitivity", style = MaterialTheme.typography.labelLarge)
-                    Slider(value = sens, onValueChange = { StepRepo.setSensitivity(it) })
-                    Text(
-                        "Calibrate: walk 100 steps and compare. Undercounting? Raise it. " +
-                            "Counting while still? Lower it.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
             Button(
-                onClick = {
-                    if (running) ctx.stopService(Intent(ctx, StepService::class.java)) else begin()
-                },
+                onClick = { if (running) confirmStop = true else begin() },
                 modifier = Modifier.fillMaxWidth()
             ) { Text(if (running) "Stop tracking" else "Start tracking") }
+        }
+    }
+
+    if (confirmStop) {
+        AlertDialog(
+            onDismissRequest = { confirmStop = false },
+            title = { Text("Stop tracking?") },
+            text = { Text("Steps won't be counted until you start again.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    ctx.stopService(Intent(ctx, StepService::class.java))
+                    confirmStop = false
+                }) { Text("Stop") }
+            },
+            dismissButton = { TextButton(onClick = { confirmStop = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    val height by StepRepo.heightCm.collectAsState()
+    val goal by StepRepo.goal.collectAsState()
+    val sens by StepRepo.sensitivity.collectAsState()
+
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text("Settings") },
+            navigationIcon = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+            }
+        )
+    }) { pad ->
+        Column(
+            Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            NumField("Height (cm)", height, 100..250) { StepRepo.setHeight(it) }
+            Text(
+                "Stride length: %.0f cm. Used for distance.".format(StepRepo.strideMeters() * 100),
+                style = MaterialTheme.typography.bodySmall
+            )
+            NumField("Daily goal (steps)", goal, 1000..50000) { StepRepo.setGoal(it) }
+
+            Text("Sensitivity", style = MaterialTheme.typography.titleMedium)
+            Slider(value = sens, onValueChange = { StepRepo.setSensitivity(it) })
+            Text(
+                "Calibrate: walk 100 steps and compare. Undercounting? Raise it. " +
+                    "Counting while still? Lower it.",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
