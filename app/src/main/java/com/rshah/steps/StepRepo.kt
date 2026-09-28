@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.time.LocalDate
 
-/** Shared state + persistence. Activity and service run in the same process. */
 object StepRepo {
     private lateinit var sp: SharedPreferences
     private var ready = false
@@ -35,7 +34,6 @@ object StepRepo {
         }
     }
 
-    /** Adds steps; resets automatically when the date changes. */
     @Synchronized
     fun add(n: Int) {
         if (sp.getString("day", null) != today()) {
@@ -47,10 +45,20 @@ object StepRepo {
         sp.edit().putInt("count", v).apply()
     }
 
+    fun applySettings(newHeight: Int, newGoal: Int, newSens: Float) {
+        heightCm.value = newHeight
+        goal.value = newGoal
+        sensitivity.value = newSens
+        sp.edit()
+            .putInt("height", newHeight)
+            .putInt("goal", newGoal)
+            .putFloat("sens", newSens)
+            .apply()
+    }
+
     fun setHeight(v: Int) { heightCm.value = v; sp.edit().putInt("height", v).apply() }
     fun setGoal(v: Int) { goal.value = v; sp.edit().putInt("goal", v).apply() }
     fun setSensitivity(v: Float) { sensitivity.value = v; sp.edit().putFloat("sens", v).apply() }
 
-    /** Stride ≈ 0.415 × height for walking. */
     fun strideMeters(): Float = heightCm.value * 0.415f / 100f
 }

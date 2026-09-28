@@ -165,7 +165,6 @@ fun SettingsScreen(onBack: () -> Unit) {
     val savedSens by StepRepo.sensitivity.collectAsState()
     val savedLevel = (savedSens * 9f + 1f).roundToInt()
 
-    // Drafts: nothing is saved until "Apply settings" is pressed.
     var hText by rememberSaveable { mutableStateOf(savedHeight.toString()) }
     var gText by rememberSaveable { mutableStateOf(savedGoal.toString()) }
     var level by rememberSaveable { mutableFloatStateOf(savedLevel.toFloat()) }
@@ -173,25 +172,33 @@ fun SettingsScreen(onBack: () -> Unit) {
     val h = hText.toIntOrNull()?.takeIf { it in HEIGHT_RANGE }
     val g = gText.toIntOrNull()?.takeIf { it in GOAL_RANGE }
     val lvl = level.roundToInt()
+
     val valid = h != null && g != null
     val dirty = hText != savedHeight.toString() || gText != savedGoal.toString() || lvl != savedLevel
 
     var confirmDiscard by remember { mutableStateOf(false) }
-    val snack = remember { SnackbarHostState() }
+    val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
-    val focus = LocalFocusManager.current
+    val focusManager = LocalFocusManager.current
 
-    fun tryBack() { if (dirty) confirmDiscard = true else onBack() }
-    BackHandler { tryBack() }
+    fun handleBack() {
+        if (dirty) {
+            confirmDiscard = true
+        } else {
+            onBack()
+        }
+    }
+
+    BackHandler { handleBack() }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snack) },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    IconButton(onClick = { tryBack() }) {
+                    IconButton(onClick = { handleBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
@@ -199,7 +206,10 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
     ) { pad ->
         Column(
-            Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(20.dp),
+            Modifier
+                .padding(pad)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SettingField("Height (cm)", hText, HEIGHT_RANGE) { hText = it }
@@ -207,6 +217,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 "Stride length: %.0f cm. Used for distance.".format((h ?: savedHeight) * 0.415f),
                 style = MaterialTheme.typography.bodySmall
             )
+
             SettingField("Daily goal (steps)", gText, GOAL_RANGE) { gText = it }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -217,10 +228,12 @@ fun SettingsScreen(onBack: () -> Unit) {
                 )
                 Text("$lvl / 10", style = MaterialTheme.typography.headlineSmall)
             }
+
             Slider(
                 value = level,
                 onValueChange = { v ->
-                    if (v.roundToInt() != level.roundToInt()) {
+                    val newLvl = v.roundToInt()
+                    if (newLvl != level.roundToInt()) {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     }
                     level = v
@@ -228,27 +241,32 @@ fun SettingsScreen(onBack: () -> Unit) {
                 valueRange = 1f..10f,
                 steps = 8
             )
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Less sensitive", style = MaterialTheme.typography.bodySmall)
                 Text("More sensitive", style = MaterialTheme.typography.bodySmall)
             }
             Text(
-                "Calibrate: walk 100 steps and compare. Undercounting? Raise it. " +
-                    "Counting while still? Lower it.",
+                "Calibrate: walk 100 steps and compare. Undercounting? Raise it. Counting while still? Lower it.",
                 style = MaterialTheme.typography.bodySmall
             )
 
             Button(
                 onClick = {
-                    StepRepo.setHeight(h!!)
-                    StepRepo.setGoal(g!!)
-                    StepRepo.setSensitivity((lvl - 1) / 9f)
-                    focus.clearFocus()
-                    scope.launch { snack.showSnackbar("Settings saved") }
+                    if (valid) {
+                        val sensFloat = (lvl - 1) / 9f
+                        StepRepo.applySettings(h!!, g!!, sensFloat)
+                        focusManager.clearFocus()
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Saved")
+                        }
+                    }
                 },
                 enabled = dirty && valid,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Apply settings") }
+            ) {
+                Text("Apply settings")
+            }
         }
     }
 
@@ -258,7 +276,10 @@ fun SettingsScreen(onBack: () -> Unit) {
             title = { Text("Discard changes?") },
             text = { Text("Your changes haven't been applied yet.") },
             confirmButton = {
-                TextButton(onClick = { confirmDiscard = false; onBack() }) { Text("Discard") }
+                TextButton(onClick = {
+                    confirmDiscard = false
+                    onBack()
+                }) { Text("Discard") }
             },
             dismissButton = {
                 TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") }
