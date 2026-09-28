@@ -43,7 +43,12 @@ class StepService : Service(), SensorEventListener {
         StepRepo.running.value = true
 
         scope.launch { StepRepo.sensitivity.collect { detector.sensitivity = it } }
-        scope.launch { StepRepo.steps.collect { nm.notify(ID, notif(it)) } }
+        scope.launch {
+            StepRepo.steps.collect {
+                nm.notify(ID, notif(it))
+                if (it % 10 == 0 || it <= 1) StepWidget.update(this@StepService)
+            }
+        }
     }
 
     override fun onSensorChanged(e: SensorEvent) =
